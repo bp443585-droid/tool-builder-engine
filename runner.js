@@ -1,53 +1,136 @@
 // runner.js
-const fs = require('fs');
+const puppeteer = require('puppeteer');
 
-const COOKIE = process.env.GEMINI_COOKIE;
-const SNLM0E = process.env.SNLM0E_TOKEN;
+const COOKIE_STRING = process.env.GEMINI_COOKIE || '';
+const CHAT_ID = process.env.GEMINI_CHAT_ID || '';
 
-async function executeWorkflow() {
-  console.log("==================================================");
-  console.log("🚀 ENGINE STARTED: Tool Pipeline Runner");
-  console.log("==================================================");
-
-  // Verification check
-  if (!COOKIE || !SNLM0E) {
-    throw new Error("❌ Missing Secrets! GEMINI_COOKIE ya SNLM0E_TOKEN nahi mila.");
-  }
-
-  console.log("✅ Credentials Verified Successfully.");
-  console.log("🎯 Target Action: Fetching 3 blocks for generated tool");
-
-  // Abhi ke liye logs verification simulation
-  const dummyBlocks = [
-    {
-      id: 1,
-      title: "TOOL HTML CARD",
-      data: `<a class="tool-card" href="/tools/pdf-to-word/">\n  <div class="tool-icon"></div>\n  <h3>PDF to Word</h3>\n  <p>Convert PDF documents to editable DOCX</p>\n</a>`
-    },
-    {
-      id: 2,
-      title: "TOOL SOURCE CODE",
-      data: `<!DOCTYPE html>\n<html>\n<head><title>Tool Page</title></head>\n<body>\n  <h1>PDF to Word Tool Logic</h1>\n</body>\n</html>`
-    },
-    {
-      id: 3,
-      title: "SITEMAP XML",
-      data: `<url>\n  <loc>https://www.texusprotools.com/tools/pdf-to-word/</loc>\n  <lastmod>2026-10-26T00:00:00+00:00</lastmod>\n  <priority>0.85</priority>\n</url>`
-    }
-  ];
-
-  console.log("\n📦 PARSING BLOCKS FOR GIT COMMITS...\n");
-
-  dummyBlocks.forEach(b => {
-    console.log(`==================== [BLOCK ${b.id}: ${b.title}] ====================`);
-    console.log(b.data);
-    console.log("----------------------------------------------------------------------\n");
-  });
-
-  console.log("✅ All 3 blocks captured and verified in Logs!");
+if (!COOKIE_STRING || !CHAT_ID) {
+  console.error("❌ GEMINI_COOKIE ya GEMINI_CHAT_ID secret gayab hai! Check GitHub Secrets.");
+  process.exit(1);
 }
 
-executeWorkflow().catch(err => {
-  console.error("❌ Process Failed:", err.message);
+// Cookie string ko Puppeteer cookie objects me todna
+function parseCookies(rawCookieStr, domain) {
+  return rawCookieStr
+    .split(';')
+    .map(c => c.trim())
+    .filter(Boolean)
+    .map(pair => {
+      const idx = pair.indexOf('=');
+      const name = idx > -1 ? pair.slice(0, idx).trim() : pair;
+      const value = idx > -1 ? pair.slice(idx + 1).trim() : '';
+      return {
+        name,
+        value,
+        domain: domain,
+        path: '/',
+        secure: true,
+        httpOnly: name.startsWith('__Secure')
+      };
+    });
+}
+
+async function fetchLastChatAndBlocks() {
+  console.log("==================================================");
+  console.log("🚀 STARTING HEADLESS RUNNER ON GITHUB ACTIONS");
+  console.log(`🔗 Target Chat URL: https://gemini.google.com/app/${CHAT_ID}`);
+  console.log("==================================================");
+
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
+  });
+
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 800 });
+
+  // 1. Session Cookies Inject Karo
+  const cookies = parseCookies(COOKIE_STRING, '.google.com');
+  await page.setCookie(...cookies);
+
+  // 2. Chat URL par jao
+  console.log("⏳ Opening Chat Thread...");
+  await page.goto(`https://gemini.google.com/app/${CHAT_ID}`, {
+    waitUntil: 'networkidle2',
+    timeout: 60000
+  });
+
+  // Check karo ki login redirect toh nahi ho gaya
+  const currentUrl = page.url();
+  if (currentUrl.includes('accounts.google.com')) {
+    await browser.close();
+    throw new Error("❌ Session Expired ya Google Login pe redirect ho gaya! Cookies update karo.");
+  }
+
+  console.log("✅ Chat loaded successfully! Parsing DOM elements...");
+
+  // 3. Last prompt aur code blocks extract karo
+  const extractedData = await page.evaluate(() => {
+    // Last user prompt
+    const userNodes = document.querySelectorAll('user-query, .user-query-container, [data-message-author-role="user"], .query-text');
+    let lastPromptText = "Not Found";
+    if (userNodes.length > 0) {
+      lastPromptText = userNodes[userNodes.length - 1].innerText.trim();
+    }
+
+    // Latest model response ke blocks
+    const modelTurns = document.querySelectorAll('message-content, [data-message-author-role="model"]');
+    if (!modelTurns.length) {
+      return { lastPrompt: lastPromptText, blocks: [] };
+    }
+
+    const latestTurn = modelTurns[modelTurns.length - 1];
+    const rawBlocks = Array.from(latestTurn.querySelectorAll('code-block, pre'));
+
+    const uniqueBlocks = [];
+    rawBlocks.forEach(b => {
+      if (!uniqueBlocks.some(parent => parent.contains(b))) {
+        uniqueBlocks.push(b);
+      }
+    });
+
+    const parsedBlocks = uniqueBlocks.map((blk, idx) => {
+      const codeTag = blk.querySelector('pre, code') || blk;
+      return {
+        index: idx + 1,
+        code: codeTag.innerText.trim()
+      };
+    });
+
+    return {
+      lastPrompt: lastPromptText,
+      blocks: parsedBlocks
+    };
+  });
+
+  await browser.close();
+
+  // 4. Output Logs me Print Karo
+  console.log("\n==================== [LAST USER PROMPT] ====================");
+  console.log(extractedData.lastPrompt);
+  console.log("============================================================\n");
+
+  console.log(`📦 Total ${extractedData.blocks.length} Code Blocks Mile:\n`);
+
+  extractedData.blocks.forEach(b => {
+    console.log(`==================== [BLOCK ${b.index}] ====================`);
+    console.log(b.code);
+    console.log("------------------------------------------------------------\n");
+  });
+
+  if (extractedData.blocks.length === 0) {
+    console.warn("⚠️ Koi code block parse nahi hua. Chat load checking needed.");
+  } else {
+    console.log("🎉 Successfully fetched prompt and all code blocks without sending anything!");
+  }
+}
+
+fetchLastChatAndBlocks().catch(err => {
+  console.error("❌ Execution Error:", err.message);
   process.exit(1);
 });
