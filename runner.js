@@ -11,29 +11,37 @@ console.log("2. GEMINI_CHAT_ID :", CHAT_ID ? `Found (${CHAT_ID})` : "MISSING ❌
 console.log("==================================================");
 
 if (!COOKIE_STRING || !CHAT_ID) {
-  console.error("❌ Jo secret upar MISSING dikh raha hai, use Repo Settings -> Secrets and variables -> Actions me jake Repository Secret me add karo!");
+  console.error("❌ Secrets missing! GEMINI_COOKIE ya GEMINI_CHAT_ID check karo.");
   process.exit(1);
 }
 
-// Cookie string ko Puppeteer cookie format me convert karna
-function parseCookies(rawCookieStr, domain) {
-  return rawCookieStr
-    .split(';')
-    .map(c => c.trim())
-    .filter(Boolean)
-    .map(pair => {
-      const idx = pair.indexOf('=');
-      const name = idx > -1 ? pair.slice(0, idx).trim() : pair;
-      const value = idx > -1 ? pair.slice(idx + 1).trim() : '';
-      return {
-        name,
-        value,
-        domain: domain,
+// Puppeteer compatible cookie format
+function parseCookies(rawCookieStr) {
+  const cookies = [];
+  const parts = rawCookieStr.split(';');
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+
+    const firstEq = trimmed.indexOf('=');
+    if (firstEq === -1) continue;
+
+    const name = trimmed.substring(0, firstEq).trim();
+    const value = trimmed.substring(firstEq + 1).trim();
+
+    if (name && value) {
+      cookies.push({
+        name: name,
+        value: value,
+        domain: '.google.com',
         path: '/',
-        secure: true,
-        httpOnly: name.startsWith('__Secure')
-      };
-    });
+        secure: true
+      });
+    }
+  }
+
+  return cookies;
 }
 
 async function fetchLastChatAndBlocks() {
@@ -46,42 +54,48 @@ async function fetchLastChatAndBlocks() {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-gpu'
+      '--disable-gpu',
+      '--window-size=1280,800'
     ]
   });
 
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
 
-  // 1. Session Cookies Inject Karo
-  const cookies = parseCookies(COOKIE_STRING, '.google.com');
+  // 1. Session Cookies Inject
+  const cookies = parseCookies(COOKIE_STRING);
+  console.log(`🍪 Injecting ${cookies.length} parsed cookies...`);
   await page.setCookie(...cookies);
 
   // 2. Chat URL par jao
   console.log("⏳ Opening Chat Thread...");
   await page.goto(`https://gemini.google.com/app/${CHAT_ID}`, {
     waitUntil: 'networkidle2',
-    timeout: 60000
+    timeout: 90000
   });
 
+  // Agar login redirect ho jaye
   const currentUrl = page.url();
   if (currentUrl.includes('accounts.google.com')) {
     await browser.close();
     throw new Error("❌ Session Expired ya Google Login pe redirect ho gaya! Cookies update karo.");
   }
 
-  console.log("✅ Chat loaded successfully! Parsing DOM elements...");
+  console.log("✅ Chat loaded successfully! Waiting for DOM elements...");
+
+  // DOM elements render hone ka wait
+  await page.waitForSelector('message-content, [data-message-author-role="model"], code-block, pre', { timeout: 30000 }).catch(() => {});
 
   // 3. Extract last user prompt aur 3 code blocks
   const extractedData = await page.evaluate(() => {
-    // Last user prompt
+    // User prompt
     const userNodes = document.querySelectorAll('user-query, .user-query-container, [data-message-author-role="user"], .query-text');
     let lastPromptText = "Not Found";
     if (userNodes.length > 0) {
       lastPromptText = userNodes[userNodes.length - 1].innerText.trim();
     }
 
-    // Latest model turn
+    // Model responses
     const modelTurns = document.querySelectorAll('message-content, [data-message-author-role="model"]');
     if (!modelTurns.length) {
       return { lastPrompt: lastPromptText, blocks: [] };
@@ -90,7 +104,7 @@ async function fetchLastChatAndBlocks() {
     const latestTurn = modelTurns[modelTurns.length - 1];
     const rawBlocks = Array.from(latestTurn.querySelectorAll('code-block, pre'));
 
-    // Nested blocks deduplicate
+    // Nested code blocks filter
     const uniqueBlocks = [];
     rawBlocks.forEach(b => {
       if (!uniqueBlocks.some(parent => parent.contains(b))) {
@@ -114,12 +128,12 @@ async function fetchLastChatAndBlocks() {
 
   await browser.close();
 
-  // 4. Output Logs me Print
+  // 4. Output Logs
   console.log("\n==================== [LAST USER PROMPT] ====================");
   console.log(extractedData.lastPrompt);
   console.log("============================================================\n");
 
-  console.log(`📦 Total ${extractedData.blocks.length} Code Blocks Mile:\n`);
+  console.log(`📦 Total ${extractedData.blocks.length} Code Blocks Extracted:\n`);
 
   extractedData.blocks.forEach(b => {
     console.log(`==================== [BLOCK ${b.index}] ====================`);
@@ -128,9 +142,9 @@ async function fetchLastChatAndBlocks() {
   });
 
   if (extractedData.blocks.length === 0) {
-    console.warn("⚠️ Koi code block parse nahi hua. DOM selectors check karne honge.");
+    console.warn("⚠️ Chat load hui par code blocks parse nahi hue. Check target URL.");
   } else {
-    console.log("🎉 Successfully fetched prompt and all code blocks!");
+    console.log("🎉 SUCCESS! All blocks captured in Git Action logs.");
   }
 }
 
