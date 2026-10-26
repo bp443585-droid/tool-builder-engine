@@ -6,113 +6,42 @@ puppeteer.use(StealthPlugin());
 const rawSecret = (process.env.GEMINI_COOKIE || '').trim();
 const CHAT_ID = (process.env.GEMINI_CHAT_ID || '48f365e996ea2be2').trim();
 
-// Hardcoded verified cookies (Secret fail hone par backup)
 const BACKUP_COOKIES = [
-  {
-    name: "__Secure-1PSID",
-    value: "g.a000Dgma42LH0iSEEXV1Sfbhruae_8dObEIvZCt6CcwTczV6LPhAZFsVQDCE4ILWHIh8F2XXJQACgYKAQkSARUSFQHGX2MiyHmIB-NLaeGExXz_4HPgfhoVAUF8yKoYwNYZyKRpIE4ZcDX_bQRr0076",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "__Secure-1PSIDTS",
-    value: "sidts-CjcBkldj_2HWOnywj3ZqpCvkupmxuTKhifCMq3G2HbvRJz_RE5CeROppMgYYxtzP2wWWNBHcCZAhEAA",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "_ga",
-    value: "GA1.1.2024299887.1746605593",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "SEARCH_SAMESITE",
-    value: "CgQI3aEB",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "APISID",
-    value: "hdg82nnBYG-i4TNJ/A-n7o3unF04XRPK5e",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "SAPISID",
-    value: "ekFydVJ1tkw_FDbL/AsodOayhViW_VqgPT",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "__Secure-1PAPISID",
-    value: "ekFydVJ1tkw_FDbL/AsodOayhViW_VqgPT",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "__Secure-3PAPISID",
-    value: "ekFydVJ1tkw_FDbL/AsodOayhViW_VqgPT",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "SID",
-    value: "g.a000Dgma42LH0iSEEXV1Sfbhruae_8dObElvZCt6CcwTczV6LPhaNAJLXxn73eqi29IgkYvfaQACgYKARESARUSFQHGX2Mi_1Uwog2anlp_3wF1lPiznBoVAUF8yKpZ_KXOHmvTjg1q8XVAutLZ0076",
-    domain: ".google.com",
-    path: "/"
-  },
-  {
-    name: "SIDCC",
-    value: "APD_SKHrywNHU5RURu2sV9R5Ka6Dj5ZoqfkQ4szYrrS2qBqvc4x0Ld8M27dBXqjETkHuEbahKhY",
-    domain: ".google.com",
-    path: "/"
-  }
+  { name: "__Secure-1PSID", value: "g.a000Dgma42LH0iSEEXV1Sfbhruae_8dObEIvZCt6CcwTczV6LPhAZFsVQDCE4ILWHIh8F2XXJQACgYKAQkSARUSFQHGX2MiyHmIB-NLaeGExXz_4HPgfhoVAUF8yKoYwNYZyKRpIE4ZcDX_bQRr0076" },
+  { name: "__Secure-1PSIDTS", value: "sidts-CjcBkldj_2HWOnywj3ZqpCvkupmxuTKhifCMq3G2HbvRJz_RE5CeROppMgYYxtzP2wWWNBHcCZAhEAA" },
+  { name: "_ga", value: "GA1.1.2024299887.1746605593" },
+  { name: "SEARCH_SAMESITE", value: "CgQI3aEB" },
+  { name: "APISID", value: "hdg82nnBYG-i4TNJ/A-n7o3unF04XRPK5e" },
+  { name: "SAPISID", value: "ekFydVJ1tkw_FDbL/AsodOayhViW_VqgPT" },
+  { name: "__Secure-1PAPISID", value: "ekFydVJ1tkw_FDbL/AsodOayhViW_VqgPT" },
+  { name: "__Secure-3PAPISID", value: "ekFydVJ1tkw_FDbL/AsodOayhViW_VqgPT" },
+  { name: "SID", value: "g.a000Dgma42LH0iSEEXV1Sfbhruae_8dObElvZCt6CcwTczV6LPhaNAJLXxn73eqi29IgkYvfaQACgYKARESARUSFQHGX2Mi_1Uwog2anlp_3wF1lPiznBoVAUF8yKpZ_KXOHmvTjg1q8XVAutLZ0076" },
+  { name: "SIDCC", value: "APD_SKHrywNHU5RURu2sV9R5Ka6Dj5ZoqfkQ4szYrrS2qBqvc4x0Ld8M27dBXqjETkHuEbahKhY" }
 ];
 
-function resolveCookies() {
-  console.log(`🔍 Raw Secret Length: ${rawSecret.length}`);
-  if (rawSecret.length > 0) {
-    console.log(`🔍 Raw Secret Preview: "${rawSecret.slice(0, 25)}..."`);
-  }
+function buildCookieList() {
+  const cookieDefs = [];
+  const domains = ['.google.com', 'gemini.google.com'];
 
-  // 1. Try Base64 decode
-  try {
-    const decoded = Buffer.from(rawSecret, 'base64').toString('utf-8');
-    const parsed = JSON.parse(decoded);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      console.log(`✅ Loaded ${parsed.length} cookies from Base64 Secret.`);
-      return parsed.map(c => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain.startsWith('.') ? c.domain : `.${c.domain}`,
-        path: c.path || '/'
-      }));
-    }
-  } catch (e) {}
+  BACKUP_COOKIES.forEach(item => {
+    domains.forEach(dom => {
+      cookieDefs.push({
+        name: item.name,
+        value: item.value,
+        domain: dom,
+        path: '/',
+        secure: true,
+        httpOnly: item.name.startsWith('__Secure') || item.name === 'SID'
+      });
+    });
+  });
 
-  // 2. Try Direct JSON
-  try {
-    const parsed = JSON.parse(rawSecret);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      console.log(`✅ Loaded ${parsed.length} cookies from raw JSON Secret.`);
-      return parsed.map(c => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain.startsWith('.') ? c.domain : `.${c.domain}`,
-        path: c.path || '/'
-      }));
-    }
-  } catch (e) {}
-
-  // 3. Fallback to hardcoded array
-  console.log(`⚠️ Secret parse nahi hua, using backup array (${BACKUP_COOKIES.length} cookies)...`);
-  return BACKUP_COOKIES;
+  return cookieDefs;
 }
 
 async function executePuppeteerEngine() {
-  const cookies = resolveCookies();
-  console.log(`🍪 Injecting ${cookies.length} session cookies into Chromium...`);
+  const cookies = buildCookieList();
+  console.log(`🍪 Injecting ${cookies.length} dual-domain session cookies...`);
 
   const browser = await puppeteer.launch({
     headless: "new",
@@ -136,24 +65,35 @@ async function executePuppeteerEngine() {
     } catch (e) {}
   }
 
-  console.log("⏳ Checking Google Session at base URL...");
+  console.log("⏳ Opening Gemini base app...");
   await page.goto('https://gemini.google.com/app', { waitUntil: 'networkidle2', timeout: 60000 });
+  
   const rootTitle = await page.title();
-  console.log(`🏠 Base Title: "${rootTitle}"`);
+  const rootUrl = page.url();
+  console.log(`🏠 Base Page Title: "${rootTitle}" | URL: ${rootUrl}`);
 
+  if (rootUrl.includes('accounts.google.com')) {
+    await browser.close();
+    throw new Error("❌ Session Expired: Google ne login page par bhej diya (cookies expired ya IP rejected).");
+  }
+
+  // Ab chat thread par click / navigation
   const targetUrl = `https://gemini.google.com/app/${CHAT_ID}`;
-  console.log(`🔗 Navigating to target chat: ${targetUrl}`);
+  console.log(`🔗 Navigating to chat: ${targetUrl}`);
   await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
   await new Promise(r => setTimeout(r, 12000));
 
   const pageTitle = await page.title();
-  console.log(`📄 Chat Page Title: "${pageTitle}"`);
-  console.log(`🌐 Final URL: ${page.url()}`);
+  const currentUrl = page.url();
+  console.log(`📄 Chat Page Title: "${pageTitle}" | URL: ${currentUrl}`);
 
-  if (pageTitle.includes('404') || page.url().includes('accounts.google.com')) {
+  if (pageTitle.includes('404')) {
+    // Page body snippet debug ke liye print karein
+    const bodySnippet = await page.evaluate(() => document.body.innerText.slice(0, 300));
+    console.log(`Body dump:\n${bodySnippet}`);
     await browser.close();
-    throw new Error("❌ Session Fail: 404 ya login redirect.");
+    throw new Error("❌ 404 Error: Chat ID unauthenticated context me load nahi hui.");
   }
 
   const results = await page.evaluate(() => {
