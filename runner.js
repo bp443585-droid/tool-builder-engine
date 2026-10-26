@@ -4,12 +4,18 @@ const puppeteer = require('puppeteer');
 const COOKIE_STRING = process.env.GEMINI_COOKIE || '';
 const CHAT_ID = process.env.GEMINI_CHAT_ID || '';
 
+console.log("==================================================");
+console.log("🔍 CHECKING SECRETS AVAILABILITY:");
+console.log("1. GEMINI_COOKIE  :", COOKIE_STRING ? `Found (Length: ${COOKIE_STRING.length})` : "MISSING ❌");
+console.log("2. GEMINI_CHAT_ID :", CHAT_ID ? `Found (${CHAT_ID})` : "MISSING ❌");
+console.log("==================================================");
+
 if (!COOKIE_STRING || !CHAT_ID) {
-  console.error("❌ GEMINI_COOKIE ya GEMINI_CHAT_ID secret gayab hai! Check GitHub Secrets.");
+  console.error("❌ Jo secret upar MISSING dikh raha hai, use Repo Settings -> Secrets and variables -> Actions me jake Repository Secret me add karo!");
   process.exit(1);
 }
 
-// Cookie string ko Puppeteer cookie objects me todna
+// Cookie string ko Puppeteer cookie format me convert karna
 function parseCookies(rawCookieStr, domain) {
   return rawCookieStr
     .split(';')
@@ -31,10 +37,8 @@ function parseCookies(rawCookieStr, domain) {
 }
 
 async function fetchLastChatAndBlocks() {
-  console.log("==================================================");
   console.log("🚀 STARTING HEADLESS RUNNER ON GITHUB ACTIONS");
-  console.log(`🔗 Target Chat URL: https://gemini.google.com/app/${CHAT_ID}`);
-  console.log("==================================================");
+  console.log(`🔗 Target URL: https://gemini.google.com/app/${CHAT_ID}`);
 
   const browser = await puppeteer.launch({
     headless: "new",
@@ -60,7 +64,6 @@ async function fetchLastChatAndBlocks() {
     timeout: 60000
   });
 
-  // Check karo ki login redirect toh nahi ho gaya
   const currentUrl = page.url();
   if (currentUrl.includes('accounts.google.com')) {
     await browser.close();
@@ -69,7 +72,7 @@ async function fetchLastChatAndBlocks() {
 
   console.log("✅ Chat loaded successfully! Parsing DOM elements...");
 
-  // 3. Last prompt aur code blocks extract karo
+  // 3. Extract last user prompt aur 3 code blocks
   const extractedData = await page.evaluate(() => {
     // Last user prompt
     const userNodes = document.querySelectorAll('user-query, .user-query-container, [data-message-author-role="user"], .query-text');
@@ -78,7 +81,7 @@ async function fetchLastChatAndBlocks() {
       lastPromptText = userNodes[userNodes.length - 1].innerText.trim();
     }
 
-    // Latest model response ke blocks
+    // Latest model turn
     const modelTurns = document.querySelectorAll('message-content, [data-message-author-role="model"]');
     if (!modelTurns.length) {
       return { lastPrompt: lastPromptText, blocks: [] };
@@ -87,6 +90,7 @@ async function fetchLastChatAndBlocks() {
     const latestTurn = modelTurns[modelTurns.length - 1];
     const rawBlocks = Array.from(latestTurn.querySelectorAll('code-block, pre'));
 
+    // Nested blocks deduplicate
     const uniqueBlocks = [];
     rawBlocks.forEach(b => {
       if (!uniqueBlocks.some(parent => parent.contains(b))) {
@@ -110,7 +114,7 @@ async function fetchLastChatAndBlocks() {
 
   await browser.close();
 
-  // 4. Output Logs me Print Karo
+  // 4. Output Logs me Print
   console.log("\n==================== [LAST USER PROMPT] ====================");
   console.log(extractedData.lastPrompt);
   console.log("============================================================\n");
@@ -124,9 +128,9 @@ async function fetchLastChatAndBlocks() {
   });
 
   if (extractedData.blocks.length === 0) {
-    console.warn("⚠️ Koi code block parse nahi hua. Chat load checking needed.");
+    console.warn("⚠️ Koi code block parse nahi hua. DOM selectors check karne honge.");
   } else {
-    console.log("🎉 Successfully fetched prompt and all code blocks without sending anything!");
+    console.log("🎉 Successfully fetched prompt and all code blocks!");
   }
 }
 
