@@ -3,18 +3,29 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
-const COOKIE_DATA = process.env.GEMINI_COOKIE || '';
-const CHAT_ID = process.env.GEMINI_CHAT_ID || '';
+const rawSecret = (process.env.GEMINI_COOKIE || '').trim();
+const CHAT_ID = (process.env.GEMINI_CHAT_ID || '').trim();
 
-if (!COOKIE_DATA || !CHAT_ID) {
+if (!rawSecret || !CHAT_ID) {
   console.error("❌ Secrets missing! GEMINI_COOKIE ya GEMINI_CHAT_ID check karo.");
   process.exit(1);
 }
 
-// JSON ya String dono ko handle karne wala parser
-function getCookiesList(raw) {
+// Solid Multi-format Cookie Decoder
+function getDecodedCookies(input) {
+  let jsonString = input;
+
+  // Agar input Base64 encoded hai, toh pehle decode karo
   try {
-    const parsed = JSON.parse(raw);
+    const decoded = Buffer.from(input, 'base64').toString('utf-8');
+    if (decoded.includes('[') && decoded.includes('name')) {
+      jsonString = decoded;
+    }
+  } catch (e) {}
+
+  // JSON Parse
+  try {
+    const parsed = JSON.parse(jsonString);
     if (Array.isArray(parsed)) {
       return parsed.map(c => ({
         name: c.name,
@@ -23,25 +34,24 @@ function getCookiesList(raw) {
         path: c.path || '/'
       }));
     }
-  } catch (e) {
-    // Agar normal string hai
-    return raw.split(';').map(part => {
-      const trimmed = part.trim();
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) return null;
-      return {
-        name: trimmed.slice(0, eq).trim(),
-        value: trimmed.slice(eq + 1).trim(),
-        domain: '.google.com',
-        path: '/'
-      };
-    }).filter(Boolean);
-  }
-  return [];
+  } catch (e) {}
+
+  // Semicolon separated fallback
+  return input.split(';').map(part => {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) return null;
+    return {
+      name: trimmed.slice(0, eq).trim(),
+      value: trimmed.slice(eq + 1).trim(),
+      domain: '.google.com',
+      path: '/'
+    };
+  }).filter(Boolean);
 }
 
 async function executePuppeteerEngine() {
-  const cookies = getCookiesList(COOKIE_DATA);
+  const cookies = getDecodedCookies(rawSecret);
   console.log(`🍪 Successfully loaded & injecting ${cookies.length} session cookies...`);
 
   if (cookies.length === 0) {
@@ -65,26 +75,26 @@ async function executePuppeteerEngine() {
 
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
 
-  // Cookies inject karo
+  // Inject cookies
   for (const c of cookies) {
     try {
       await page.setCookie(c);
     } catch (e) {}
   }
 
-  // Pehle root app kholo taaki session lock ho jaye
+  // Root authentication check
   console.log("⏳ Authenticating Google Session at root...");
   await page.goto('https://gemini.google.com/app', { waitUntil: 'networkidle2', timeout: 60000 });
 
   const rootTitle = await page.title();
   console.log(`🏠 Root Page Title: "${rootTitle}"`);
 
-  // Target chat open karo
+  // Navigate to target chat
   const targetUrl = `https://gemini.google.com/app/${CHAT_ID}`;
   console.log(`🔗 Navigating to chat thread: ${targetUrl}`);
   await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-  // DOM hydrate hone ka wait
+  // DOM hydrate wait
   await new Promise(r => setTimeout(r, 12000));
 
   const pageTitle = await page.title();
