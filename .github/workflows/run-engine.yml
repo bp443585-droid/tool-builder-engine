@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  fetch-latest-tool:
+  run-tool-builder:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -16,12 +16,11 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install Puppeteer
-        run: npm install puppeteer
+      - name: Install Puppeteer and Stealth
+        run: npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
 
-      - name: Run Fetcher Script
+      - name: Run Builder Engine
         env:
           GEMINI_COOKIE: ${{ secrets.GEMINI_COOKIE }}
-          SNLM0E_TOKEN: ${{ secrets.SNLM0E_TOKEN }}
           GEMINI_CHAT_ID: ${{ secrets.GEMINI_CHAT_ID }}
         run: node runner.js
