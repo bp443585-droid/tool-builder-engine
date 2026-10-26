@@ -4,18 +4,11 @@ const puppeteer = require('puppeteer');
 const COOKIE_STRING = process.env.GEMINI_COOKIE || '';
 const CHAT_ID = process.env.GEMINI_CHAT_ID || '';
 
-console.log("==================================================");
-console.log("🔍 CHECKING SECRETS AVAILABILITY:");
-console.log("1. GEMINI_COOKIE  :", COOKIE_STRING ? `Found (Length: ${COOKIE_STRING.length})` : "MISSING ❌");
-console.log("2. GEMINI_CHAT_ID :", CHAT_ID ? `Found (${CHAT_ID})` : "MISSING ❌");
-console.log("==================================================");
-
 if (!COOKIE_STRING || !CHAT_ID) {
   console.error("❌ Secrets missing! GEMINI_COOKIE ya GEMINI_CHAT_ID check karo.");
   process.exit(1);
 }
 
-// Puppeteer compatible cookie format
 function parseCookies(rawCookieStr) {
   const cookies = [];
   const parts = rawCookieStr.split(';');
@@ -40,13 +33,12 @@ function parseCookies(rawCookieStr) {
       });
     }
   }
-
   return cookies;
 }
 
 async function fetchLastChatAndBlocks() {
-  console.log("🚀 STARTING HEADLESS RUNNER ON GITHUB ACTIONS");
-  console.log(`🔗 Target URL: https://gemini.google.com/app/${CHAT_ID}`);
+  const targetUrl = `https://gemini.google.com/app/${CHAT_ID}`;
+  console.log(`🔗 Target URL: ${targetUrl}`);
 
   const browser = await puppeteer.launch({
     headless: "new",
@@ -55,97 +47,76 @@ async function fetchLastChatAndBlocks() {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--window-size=1280,800'
+      '--window-size=1920,1080'
     ]
   });
 
   const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 800 });
+  await page.setViewport({ width: 1920, height: 1080 });
 
-  // 1. Session Cookies Inject
+  // Real browser identity emulate karna
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
+
+  // Cookies set karo
   const cookies = parseCookies(COOKIE_STRING);
   console.log(`🍪 Injecting ${cookies.length} parsed cookies...`);
   await page.setCookie(...cookies);
 
-  // 2. Chat URL par jao
   console.log("⏳ Opening Chat Thread...");
-  await page.goto(`https://gemini.google.com/app/${CHAT_ID}`, {
+  await page.goto(targetUrl, {
     waitUntil: 'networkidle2',
     timeout: 90000
   });
 
-  // Agar login redirect ho jaye
+  // 10 second wait taaki Angular/Lit custom elements DOM me inject ho jayein
+  await new Promise(r => setTimeout(r, 10000));
+
+  const pageTitle = await page.title();
   const currentUrl = page.url();
-  if (currentUrl.includes('accounts.google.com')) {
-    await browser.close();
-    throw new Error("❌ Session Expired ya Google Login pe redirect ho gaya! Cookies update karo.");
-  }
+  console.log(`📄 Page Title: "${pageTitle}"`);
+  console.log(`🌐 Final Loaded URL: ${currentUrl}`);
 
-  console.log("✅ Chat loaded successfully! Waiting for DOM elements...");
+  // Page ka HTML structure debug karne ke liye
+  const bodyTextSnippet = await page.evaluate(() => document.body.innerText.slice(0, 300));
+  console.log(`📝 Page Body Preview:\n${bodyTextSnippet}\n---`);
 
-  // DOM elements render hone ka wait
-  await page.waitForSelector('message-content, [data-message-author-role="model"], code-block, pre', { timeout: 30000 }).catch(() => {});
-
-  // 3. Extract last user prompt aur 3 code blocks
+  // Target extraction
   const extractedData = await page.evaluate(() => {
-    // User prompt
-    const userNodes = document.querySelectorAll('user-query, .user-query-container, [data-message-author-role="user"], .query-text');
-    let lastPromptText = "Not Found";
-    if (userNodes.length > 0) {
-      lastPromptText = userNodes[userNodes.length - 1].innerText.trim();
-    }
-
-    // Model responses
-    const modelTurns = document.querySelectorAll('message-content, [data-message-author-role="model"]');
-    if (!modelTurns.length) {
-      return { lastPrompt: lastPromptText, blocks: [] };
-    }
-
-    const latestTurn = modelTurns[modelTurns.length - 1];
-    const rawBlocks = Array.from(latestTurn.querySelectorAll('code-block, pre'));
-
-    // Nested code blocks filter
-    const uniqueBlocks = [];
-    rawBlocks.forEach(b => {
-      if (!uniqueBlocks.some(parent => parent.contains(b))) {
-        uniqueBlocks.push(b);
+    // Gemini message query containers
+    const queries = Array.from(document.querySelectorAll('user-query, .user-query-container, [data-message-author-role="user"], .query-text, p'));
+    const userPromptNodes = queries.filter(el => el.innerText && el.innerText.toLowerCase().includes('pdf to word'));
+    
+    // Code elements
+    const codeTags = Array.from(document.querySelectorAll('pre, code-block, code'));
+    const blocks = [];
+    
+    codeTags.forEach((tag, idx) => {
+      const txt = tag.innerText.trim();
+      // Sirf meaningful blocks uthao
+      if (txt.length > 30 && !blocks.some(b => b.code.includes(txt) || txt.includes(b.code))) {
+        blocks.push({
+          index: blocks.length + 1,
+          code: txt
+        });
       }
     });
 
-    const parsedBlocks = uniqueBlocks.map((blk, idx) => {
-      const codeTag = blk.querySelector('pre, code') || blk;
-      return {
-        index: idx + 1,
-        code: codeTag.innerText.trim()
-      };
-    });
-
     return {
-      lastPrompt: lastPromptText,
-      blocks: parsedBlocks
+      hasTargetPrompt: userPromptNodes.length > 0,
+      totalCodeElementsOnPage: codeTags.length,
+      blocks: blocks
     };
   });
 
   await browser.close();
 
-  // 4. Output Logs
-  console.log("\n==================== [LAST USER PROMPT] ====================");
-  console.log(extractedData.lastPrompt);
-  console.log("============================================================\n");
-
-  console.log(`📦 Total ${extractedData.blocks.length} Code Blocks Extracted:\n`);
+  console.log(`🔍 DOM Scan Result: Target Prompt Match = ${extractedData.hasTargetPrompt}, Total Code Nodes = ${extractedData.totalCodeElementsOnPage}`);
+  console.log(`📦 Extracted Blocks: ${extractedData.blocks.length}\n`);
 
   extractedData.blocks.forEach(b => {
     console.log(`==================== [BLOCK ${b.index}] ====================`);
-    console.log(b.code);
-    console.log("------------------------------------------------------------\n");
+    console.log(b.code.slice(0, 150) + "...\n");
   });
-
-  if (extractedData.blocks.length === 0) {
-    console.warn("⚠️ Chat load hui par code blocks parse nahi hue. Check target URL.");
-  } else {
-    console.log("🎉 SUCCESS! All blocks captured in Git Action logs.");
-  }
 }
 
 fetchLastChatAndBlocks().catch(err => {
