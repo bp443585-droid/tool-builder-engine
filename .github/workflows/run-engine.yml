@@ -1,10 +1,10 @@
 name: Gemini Tool Pipeline
 
 on:
-  workflow_dispatch: # GitHub UI me manual run karne ka button dega
+  workflow_dispatch:
 
 jobs:
-  build-and-parse:
+  fetch-latest-tool:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,8 +16,12 @@ jobs:
         with:
           node-version: 20
 
-      - name: Run Tool Builder Engine
+      - name: Install Puppeteer
+        run: npm install puppeteer
+
+      - name: Run Fetcher Script
         env:
           GEMINI_COOKIE: ${{ secrets.GEMINI_COOKIE }}
           SNLM0E_TOKEN: ${{ secrets.SNLM0E_TOKEN }}
+          GEMINI_CHAT_ID: ${{ secrets.GEMINI_CHAT_ID }}
         run: node runner.js
