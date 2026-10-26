@@ -1,5 +1,7 @@
 // runner.js
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
 
 const COOKIE_STRING = process.env.GEMINI_COOKIE || '';
 const CHAT_ID = process.env.GEMINI_CHAT_ID || '';
@@ -29,16 +31,20 @@ function parseCookies(rawCookieStr) {
         value: value,
         domain: '.google.com',
         path: '/',
-        secure: true
+        secure: true,
+        sameSite: 'None'
       });
     }
   }
   return cookies;
 }
 
-async function fetchLastChatAndBlocks() {
+async function executePuppeteerEngine() {
   const targetUrl = `https://gemini.google.com/app/${CHAT_ID}`;
+  console.log("==================================================");
+  console.log("🚀 LAUNCHING STEALTH RUNNER ENGINE");
   console.log(`🔗 Target URL: ${targetUrl}`);
+  console.log("==================================================");
 
   const browser = await puppeteer.launch({
     headless: "new",
@@ -47,6 +53,7 @@ async function fetchLastChatAndBlocks() {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
+      '--disable-blink-features=AutomationControlled',
       '--window-size=1920,1080'
     ]
   });
@@ -54,72 +61,86 @@ async function fetchLastChatAndBlocks() {
   const page = await browser.newPage();
   await page.setViewport({ width: 1920, height: 1080 });
 
-  // Real browser identity emulate karna
+  // Browser headers & user-agent masking
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Sec-Ch-Ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"'
+  });
 
-  // Cookies set karo
+  // Inject session cookies
   const cookies = parseCookies(COOKIE_STRING);
-  console.log(`🍪 Injecting ${cookies.length} parsed cookies...`);
+  console.log(`🍪 Injecting ${cookies.length} session cookies...`);
   await page.setCookie(...cookies);
 
-  console.log("⏳ Opening Chat Thread...");
+  console.log("⏳ Opening chat thread in stealth mode...");
   await page.goto(targetUrl, {
     waitUntil: 'networkidle2',
     timeout: 90000
   });
 
-  // 10 second wait taaki Angular/Lit custom elements DOM me inject ho jayein
-  await new Promise(r => setTimeout(r, 10000));
-
-  const pageTitle = await page.title();
+  // Check login redirection
   const currentUrl = page.url();
+  const pageTitle = await page.title();
   console.log(`📄 Page Title: "${pageTitle}"`);
   console.log(`🌐 Final Loaded URL: ${currentUrl}`);
 
-  // Page ka HTML structure debug karne ke liye
-  const bodyTextSnippet = await page.evaluate(() => document.body.innerText.slice(0, 300));
-  console.log(`📝 Page Body Preview:\n${bodyTextSnippet}\n---`);
+  if (currentUrl.includes('accounts.google.com') || pageTitle.includes('404')) {
+    await browser.close();
+    throw new Error("❌ Session Fail: Google Login redirect ya 404 ho gaya. Cookie refresh check karo.");
+  }
 
-  // Target extraction
-  const extractedData = await page.evaluate(() => {
-    // Gemini message query containers
-    const queries = Array.from(document.querySelectorAll('user-query, .user-query-container, [data-message-author-role="user"], .query-text, p'));
-    const userPromptNodes = queries.filter(el => el.innerText && el.innerText.toLowerCase().includes('pdf to word'));
-    
-    // Code elements
-    const codeTags = Array.from(document.querySelectorAll('pre, code-block, code'));
-    const blocks = [];
-    
-    codeTags.forEach((tag, idx) => {
-      const txt = tag.innerText.trim();
-      // Sirf meaningful blocks uthao
-      if (txt.length > 30 && !blocks.some(b => b.code.includes(txt) || txt.includes(b.code))) {
-        blocks.push({
-          index: blocks.length + 1,
-          code: txt
-        });
+  // DOM load wait
+  console.log("⏳ Waiting for chat content to hydrate...");
+  await new Promise(r => setTimeout(r, 12000));
+
+  // Extract blocks from latest response
+  const results = await page.evaluate(() => {
+    // Latest model message container dhoondho
+    const modelTurns = document.querySelectorAll('message-content, [data-message-author-role="model"]');
+    if (!modelTurns.length) return { error: "Model responses DOM me nahi mile." };
+
+    const latestTurn = modelTurns[modelTurns.length - 1];
+    const rawBlocks = Array.from(latestTurn.querySelectorAll('code-block, pre'));
+
+    // Filter inner nested code tags
+    const uniqueBlocks = [];
+    rawBlocks.forEach(b => {
+      if (!uniqueBlocks.some(parent => parent.contains(b))) {
+        uniqueBlocks.push(b);
       }
     });
 
-    return {
-      hasTargetPrompt: userPromptNodes.length > 0,
-      totalCodeElementsOnPage: codeTags.length,
-      blocks: blocks
-    };
+    const parsed = uniqueBlocks.map((blk, idx) => {
+      const codeTag = blk.querySelector('pre, code') || blk;
+      return {
+        blockNo: idx + 1,
+        content: codeTag.innerText.trim()
+      };
+    });
+
+    return { blocks: parsed };
   });
 
   await browser.close();
 
-  console.log(`🔍 DOM Scan Result: Target Prompt Match = ${extractedData.hasTargetPrompt}, Total Code Nodes = ${extractedData.totalCodeElementsOnPage}`);
-  console.log(`📦 Extracted Blocks: ${extractedData.blocks.length}\n`);
+  if (results.error) {
+    console.warn(`⚠️ ${results.error}`);
+    return;
+  }
 
-  extractedData.blocks.forEach(b => {
-    console.log(`==================== [BLOCK ${b.index}] ====================`);
-    console.log(b.code.slice(0, 150) + "...\n");
+  console.log(`\n🎉 Total ${results.blocks.length} Blocks Capture Ho Gaye!\n`);
+
+  results.blocks.forEach(b => {
+    console.log(`==================== [BLOCK ${b.blockNo}] ====================`);
+    console.log(b.content);
+    console.log("-------------------------------------------------------------\n");
   });
 }
 
-fetchLastChatAndBlocks().catch(err => {
-  console.error("❌ Execution Error:", err.message);
+executePuppeteerEngine().catch(err => {
+  console.error("❌ Process Error:", err.message);
   process.exit(1);
 });
