@@ -3,48 +3,50 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
-const COOKIE_STRING = process.env.GEMINI_COOKIE || '';
+const COOKIE_DATA = process.env.GEMINI_COOKIE || '';
 const CHAT_ID = process.env.GEMINI_CHAT_ID || '';
 
-if (!COOKIE_STRING || !CHAT_ID) {
+if (!COOKIE_DATA || !CHAT_ID) {
   console.error("❌ Secrets missing! GEMINI_COOKIE ya GEMINI_CHAT_ID check karo.");
   process.exit(1);
 }
 
-function parseCookies(rawCookieStr) {
-  const cookies = [];
-  const parts = rawCookieStr.split(';');
-
-  for (const part of parts) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-
-    const firstEq = trimmed.indexOf('=');
-    if (firstEq === -1) continue;
-
-    const name = trimmed.substring(0, firstEq).trim();
-    const value = trimmed.substring(firstEq + 1).trim();
-
-    if (name && value) {
-      cookies.push({
-        name: name,
-        value: value,
-        domain: '.google.com',
-        path: '/',
-        secure: true,
-        sameSite: 'None'
-      });
+// JSON ya String dono ko handle karne wala parser
+function getCookiesList(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map(c => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain.startsWith('.') ? c.domain : `.${c.domain}`,
+        path: c.path || '/'
+      }));
     }
+  } catch (e) {
+    // Agar normal string hai
+    return raw.split(';').map(part => {
+      const trimmed = part.trim();
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) return null;
+      return {
+        name: trimmed.slice(0, eq).trim(),
+        value: trimmed.slice(eq + 1).trim(),
+        domain: '.google.com',
+        path: '/'
+      };
+    }).filter(Boolean);
   }
-  return cookies;
+  return [];
 }
 
 async function executePuppeteerEngine() {
-  const targetUrl = `https://gemini.google.com/app/${CHAT_ID}`;
-  console.log("==================================================");
-  console.log("🚀 LAUNCHING STEALTH RUNNER ENGINE");
-  console.log(`🔗 Target URL: ${targetUrl}`);
-  console.log("==================================================");
+  const cookies = getCookiesList(COOKIE_DATA);
+  console.log(`🍪 Successfully loaded & injecting ${cookies.length} session cookies...`);
+
+  if (cookies.length === 0) {
+    throw new Error("❌ Cookies parse nahi ho payin! Secret check karo.");
+  }
 
   const browser = await puppeteer.launch({
     headless: "new",
@@ -61,51 +63,46 @@ async function executePuppeteerEngine() {
   const page = await browser.newPage();
   await page.setViewport({ width: 1920, height: 1080 });
 
-  // Browser headers & user-agent masking
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
-  await page.setExtraHTTPHeaders({
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Sec-Ch-Ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"'
-  });
 
-  // Inject session cookies
-  const cookies = parseCookies(COOKIE_STRING);
-  console.log(`🍪 Injecting ${cookies.length} session cookies...`);
-  await page.setCookie(...cookies);
-
-  console.log("⏳ Opening chat thread in stealth mode...");
-  await page.goto(targetUrl, {
-    waitUntil: 'networkidle2',
-    timeout: 90000
-  });
-
-  // Check login redirection
-  const currentUrl = page.url();
-  const pageTitle = await page.title();
-  console.log(`📄 Page Title: "${pageTitle}"`);
-  console.log(`🌐 Final Loaded URL: ${currentUrl}`);
-
-  if (currentUrl.includes('accounts.google.com') || pageTitle.includes('404')) {
-    await browser.close();
-    throw new Error("❌ Session Fail: Google Login redirect ya 404 ho gaya. Cookie refresh check karo.");
+  // Cookies inject karo
+  for (const c of cookies) {
+    try {
+      await page.setCookie(c);
+    } catch (e) {}
   }
 
-  // DOM load wait
-  console.log("⏳ Waiting for chat content to hydrate...");
+  // Pehle root app kholo taaki session lock ho jaye
+  console.log("⏳ Authenticating Google Session at root...");
+  await page.goto('https://gemini.google.com/app', { waitUntil: 'networkidle2', timeout: 60000 });
+
+  const rootTitle = await page.title();
+  console.log(`🏠 Root Page Title: "${rootTitle}"`);
+
+  // Target chat open karo
+  const targetUrl = `https://gemini.google.com/app/${CHAT_ID}`;
+  console.log(`🔗 Navigating to chat thread: ${targetUrl}`);
+  await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+  // DOM hydrate hone ka wait
   await new Promise(r => setTimeout(r, 12000));
+
+  const pageTitle = await page.title();
+  console.log(`📄 Chat Page Title: "${pageTitle}"`);
+
+  if (pageTitle.includes('404') || page.url().includes('accounts.google.com')) {
+    await browser.close();
+    throw new Error("❌ Session Fail: 404 ya login redirect.");
+  }
 
   // Extract blocks from latest response
   const results = await page.evaluate(() => {
-    // Latest model message container dhoondho
     const modelTurns = document.querySelectorAll('message-content, [data-message-author-role="model"]');
-    if (!modelTurns.length) return { error: "Model responses DOM me nahi mile." };
+    if (!modelTurns.length) return { blocks: [] };
 
     const latestTurn = modelTurns[modelTurns.length - 1];
     const rawBlocks = Array.from(latestTurn.querySelectorAll('code-block, pre'));
 
-    // Filter inner nested code tags
     const uniqueBlocks = [];
     rawBlocks.forEach(b => {
       if (!uniqueBlocks.some(parent => parent.contains(b))) {
@@ -113,26 +110,17 @@ async function executePuppeteerEngine() {
       }
     });
 
-    const parsed = uniqueBlocks.map((blk, idx) => {
-      const codeTag = blk.querySelector('pre, code') || blk;
-      return {
+    return {
+      blocks: uniqueBlocks.map((blk, idx) => ({
         blockNo: idx + 1,
-        content: codeTag.innerText.trim()
-      };
-    });
-
-    return { blocks: parsed };
+        content: (blk.querySelector('pre, code') || blk).innerText.trim()
+      }))
+    };
   });
 
   await browser.close();
 
-  if (results.error) {
-    console.warn(`⚠️ ${results.error}`);
-    return;
-  }
-
   console.log(`\n🎉 Total ${results.blocks.length} Blocks Capture Ho Gaye!\n`);
-
   results.blocks.forEach(b => {
     console.log(`==================== [BLOCK ${b.blockNo}] ====================`);
     console.log(b.content);
